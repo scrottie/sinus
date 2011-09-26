@@ -48,6 +48,11 @@
 #   XXX Window should probably be set to full screen and the size read from
 #   the window ob rather than being hard-coded
 
+#   TODO:
+
+#   Config file should let you map keys to numeric variables by way of an order-of-
+#   magnitude based increaser/decreaser.
+
 =for comment
 
 Todo:
@@ -82,19 +87,14 @@ use Math::Trig;
 
 use PadWalker;
 
-use constant DIM_W => 800;
-use constant DIM_H => 600;
-use constant CENTER_X => DIM_W/2;
-use constant CENTER_Y => DIM_H/2;
 use constant M_PI => 3.14159265358979323846;
 
 $SIG{USR1} = sub { use Carp; Carp::confess "USR1"; };
 
-my $screen;	
-my $black;
-
 # renderer vars
 
+my $screen;	
+my $background_color_ob;
 my $fh;
 my $text_color_ob;
 my $font_ob;
@@ -104,6 +104,7 @@ my $xpos; my $first_x;
 my $ypos; my $first_y;
 my $wave_stop_at_center_cur;
 my $wave_amplitude_cur;
+my $background_image_ob;
 
 # commands from IO to renderer 
 
@@ -119,6 +120,7 @@ my $wave_amplitude = 2;
 my $font;
 my $font_size = 35;
 my $image;
+my $background_image;
 
 #
 
@@ -138,10 +140,16 @@ if ( SDL::init(SDL::SDL_INIT_VIDEO) < 0 ) {
 }
 
 # Opening a window to draw inside 
-if ( ! ( $screen = SDL::Video::set_video_mode( DIM_W, DIM_H, 32, SDL_HWSURFACE | SDL_DOUBLEBUF ) ) ) {
+# if ( ! ( $screen = SDL::Video::set_video_mode( DIM_W, DIM_H, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) ) ) 
+if ( ! ( $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) ) ) {
     printf("SDL_SetVideoMode error: %s\n", SDL::get_error());
     exit(-1);
 }
+
+sub DIM_W () { $screen->w } #use constant DIM_W => 800;
+sub DIM_H () { $screen->h } #use constant DIM_H => 600;
+sub CENTER_X () { DIM_W / 2 } #use constant CENTER_X => DIM_W/2;
+sub CENTER_Y () { DIM_H / 2 } #use constant CENTER_Y => DIM_H/2;
 
 # Initializing SDL_ttf 
 if ( SDL::TTF::init() < 0 ) {
@@ -180,7 +188,7 @@ async {
     }
 
     # Mapping background and text color 
-    $black = SDL::Video::map_RGB($screen->format, split m/ +/, $background_color );
+    $background_color_ob = SDL::Video::map_RGB($screen->format, split m/ +/, $background_color );
 
     $text_color_ob = SDL::Color->new(split m/ +/, $text_color);
 
@@ -224,6 +232,22 @@ async {
         $letter_rect[$image_index]->h( $surface->h );
     }
 
+    if( $background_image ) {
+        $background_image_ob = SDL::Image::load( $background_image ) or die "couldn't load $image: " . SDL::get_error();
+        if( $background_image_ob->w != DIM_W or $background_image_ob->h != DIM_H ) {
+            # scale the image up or down as necessary to fit; correct aspect ratio isn't achieved
+            my $zoom1 = DIM_W / $background_image_ob->w;
+            my $zoom2 = DIM_H / $background_image_ob->h;
+            (my $zoom) = sort { $a <=> $b } $zoom1, $zoom2;  # smaller size of the two
+            my $tmp_surface = SDL::GFX::Rotozoom::surface( 
+                $background_image_ob, 0, $zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
+            );
+            $background_image_ob = $tmp_surface;
+        }
+    } else {
+        $background_image_ob = undef;
+    }
+
     #
     #
     #
@@ -238,6 +262,31 @@ async {
             $screen, 
             SDL::Rect->new($x, $y, $surface->w, $surface->h)
         ); 
+    };
+
+    my $clear_screen = sub {
+        if( $background_image_ob ) {
+            # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
+            #if( $background_image_ob->w == DIM_W and $background_image_ob->h == DIM_H ) {
+                #SDL::Video::blit_surface( 
+                #    $background_image_ob,
+                #    SDL::Rect->new(0, 0, $background_image_ob->w, $background_image_ob->h), 
+                #    $screen,
+                #    SDL::Rect->new(0, 0, DIM_W, DIM_H),
+                #);
+                $render_letter->($background_image_ob, 0, 0);
+            #} else {
+            #    my $zoom1 = $background_image_ob->w / DIM_W;
+            #    my $zoom2 = $background_image_ob->h / DIM_H;
+            #    (my $zoom) = sort { $a <=> $b } $zoom1, $zoom2;  # smaller size of the two
+            #    my $tmp_surface = SDL::GFX::Rotozoom::surface( 
+            #        $background_image_ob, 0, $zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
+            #    );
+            #    $render_letter->($tmp_surface, 0, 0);
+            #}
+        } else {
+            SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $background_color_ob);
+        }
     };
 
     #
@@ -297,8 +346,8 @@ async {
         }
 
         SDL::Video::flip($screen) < 0 and die;
+        $clear_screen->();
         SDL::delay(20);
-        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
 
         cede;
 
@@ -338,8 +387,8 @@ if( $image_index and $i == $image_index ) { warn "image: x: " . $letter_rect[$i]
         }
 
         SDL::Video::flip($screen) < 0 and die;
+        $clear_screen->();
         SDL::delay(20);
-        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
 
         cede;
 
@@ -421,12 +470,8 @@ if( $image_index and $i == $image_index ) { warn "image: x: " . $letter_rect[$i]
 
         $first_x += $dir * 3;
     
-        #for (my $i = 0; $i < length($text); $i++) {
-        #    SDL::Video::fill_rect($screen, $letter_rect[$i], $black);
-        #}
-
         SDL::Video::flip($screen) < 0 and die;
-        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
+        $clear_screen->();
         SDL::delay(20);
 
         cede;
@@ -458,10 +503,11 @@ while(1) {
                # next slide
                $next_slide = 1;
            } elsif( $event->key_sym == SDLK_q ) {
-               # spin faster
+               exit; # quit
            } elsif( $event->key_sym == SDLK_a ) {
                # spin slower
            } elsif( $event->key_sym == SDLK_w ) {
+               # spin faster... dunno...
            } 
            
        } elsif( $event->type == SDL_QUIT ) { 
@@ -507,6 +553,12 @@ wtf...
 =effect wave
 =font Andes.ttf
 another slide
+======================
+=effect wave
+=font Andes.ttf
+=background_image border1.jpg
+another slide
+this time with a border
 ======================
 =effect lard
 another slide
