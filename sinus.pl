@@ -1,6 +1,9 @@
 
 #   Sinusfont: a simple SDL_ttf based sinus scroller
 #   Copyright (C) 2004 Angelo "Encelo" Theodorou
+
+#   sinus.pl: a stupid SDL_ttf based presentation software
+#   Copyright (c) 2011 Scott "scrottie" Walters
  
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -16,16 +19,34 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  
-#   NOTE: 
+#   ORIGINAL Sinusfont NOTE: 
  
 #   This program is part of "Mars, Land of No Mercy" SDL examples, 
 #   you can find others examples on http://mars.sourceforge.net
 
-#   This is a literal translation to Perl of the above as found at
+#   NOTE:
+
+#   This was adapted from a literal translation to Perl of the above 
+#   as found at:
 #   http://encelo.netsons.org/_download/sinus_font.tar.gz.
 #   Translation by Scott Walters (aka scrottie, scott@slowass.net).
 #   Get that for the .ttfs and the original .c or else cp your own
 #   .ttf in here and change this to use that.
+
+#   Usage:  $0 presentation_file.txt
+
+#   The __DATA__ block contains a sample presentation.
+#   The syntax of the file is:
+
+#   =name value              <-- set a variable to a value
+#   text text                <-- text 
+#   =======================  <-- end slide; start next slide
+
+#   See source code for all variables that can be diddled, or
+#   see the example presentation for some of the more useful ones
+
+#   XXX Window should probably be set to full screen and the size read from
+#   the window ob rather than being hard-coded
 
 =for comment
 
@@ -73,19 +94,19 @@ my $black;
 
 # renderer vars
 
+my $fh;
 my $text_color_ob;
 my $font_ob;
 my $dir = 1;
 my $angle = 0;
 my $xpos; my $first_x;
-my $ypos;
+my $ypos; my $first_y;
 my $wave_stop_at_center_cur;
 my $wave_amplitude_cur;
 
 # commands from IO to renderer 
 
 my $next_slide;
-my $skip;
 
 # commands from IO to renderer or from slide file to renderer
 
@@ -99,8 +120,12 @@ my $font_size = 35;
 
 #
 
-my $slides_fn = shift @ARGV or die "pass slides filename as arg";
-open my $fh, '<', $slides_fn or die $!;
+if( @ARGV ) {
+    my $slides_fn = shift @ARGV or die "pass slides filename as arg";
+    open $fh, '<', $slides_fn or die $!;
+} else {
+    $fh = \*DATA;
+}
 
 $font = "Distres2.ttf"; # XXX overwrite and re-open TTF as necessary based on instructions in the slide file
 
@@ -130,7 +155,7 @@ async {
 
   next_slide:
 
-    my $string = '';
+    my $text = '';
 
     my $pad = PadWalker::peek_my(0);
 
@@ -141,14 +166,9 @@ async {
             exists $pad->{'$' . $1} or die "variable ``$1'' not in pad";
             ${$pad->{'$' . $1}} = $3;
        } else {
-           chomp $line;
-           $string .= $line;
+           $text .= $line;
        }
     }
-
-    warn "string: $string";
-
-    $next_slide = 0;
 
     # Opening the font 
     if( ! ( $font_ob = SDL::TTF::open_font($font, $font_size) ) ) {
@@ -161,20 +181,33 @@ async {
     $text_color_ob = SDL::Color->new(split m/ +/, $text_color);
 
     # Getting text surface dimension, it will be useful later 
-    (my $text_width, my $text_height) = @{ SDL::TTF::size_text($font_ob, $string) };
+    my $text_width = 0;
+    my $text_height = 0;
+    my $line_height = 0;  # height of an individual line of text
+    for my $line ( split m/\n/, $text ) {
+        (my $tmp_text_width, my $tmp_text_height) = @{ SDL::TTF::size_text($font_ob, $line) };
+        $text_width = $tmp_text_width if $tmp_text_width > $text_width;
+        $line_height = $tmp_text_height if $tmp_text_height > $line_height;
+        $text_height += $tmp_text_height;  # probably just $line_height * scalar @text
+    }
 
     # Vertical text scrolling 
     # Dynamic allocation of structures based on number of letters 
-    my @letter_rect = map { SDL::Rect->new( 0, 0, 0, 0 ) } 1 .. length $string;
+    my @letter_rect = map { SDL::Rect->new( 0, 0, 0, 0 ) } 1 .. length $text;
 
     # Creating surfaces for every letter 
     my @letter_surf;
-    for ( my $i = 0; $i < length($string); $i++) {
-        my $letter = substr $string, $i, 1;
+    for ( my $i = 0; $i < length($text); $i++) {
+        my $letter = substr $text, $i, 1;
+        next if $letter eq "\n";
         $letter_surf[$i] = SDL::TTF::render_text_blended($font_ob, $letter, $text_color_ob);
         $letter_rect[$i]->w( $letter_surf[$i]->w );
         $letter_rect[$i]->h( $letter_surf[$i]->h );
     }
+
+    #
+
+    $next_slide = 0;
 
     goto "effect_$effect" if $effect;
     goto effect_wave;
@@ -185,10 +218,18 @@ async {
 
   effect_credits: 
 
-    $ypos = $screen->h;
-    $xpos = CENTER_X - $text_width / 2;
-    while ( $ypos > CENTER_Y) {
-        for ( my $i = 0; $i < length($string); $i++) {
+    $first_x = CENTER_X - $text_width / 2;
+    $first_y = $screen->h;
+    while ( 1 ) {
+        $xpos = $first_x;
+        $ypos = $first_y;
+        for ( my $i = 0; $i < length($text); $i++ ) {
+warn "$i $xpos $ypos";
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $xpos = $first_x;
+                $ypos += $line_height;
+                next;
+            }
             $letter_rect[$i]->x( $xpos );
             $letter_rect[$i]->y( $ypos );
             $xpos += $letter_rect[$i]->w;
@@ -196,23 +237,21 @@ async {
             # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
             SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
         }
-        $xpos = CENTER_X - ($text_width / 2);
-        $ypos -= 2;
-    
+
+        if ( $first_y > CENTER_Y - $text_height / 2 ) {
+            $first_y -= 2;
+        }
+
         SDL::Video::flip($screen) < 0 and die;
         SDL::delay(20);
+        # SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black); # XXX
 
         cede;
 
         goto next_slide if $next_slide;
-        $skip and do { $skip = 0; last; };
-    
-        for ( my $i = 0; $i < length($string); $i++) {
-            SDL::Video::fill_rect($screen, $letter_rect[$i], $black);
-        }
     
     }
-    
+
     #
     #
     #
@@ -223,14 +262,26 @@ async {
     $ypos = CENTER_Y;
     $wave_stop_at_center_cur = $wave_stop_at_center;
     $wave_amplitude_cur = $wave_amplitude;
-    # $first_x = DIM_W;
-    $first_x = - $text_width; # DIM_W;
+    $first_x = - $text_width; # off left of screen
+    $xpos = $first_x;
+
     while ( 1 ) {
-    	$xpos = $first_x;
-        for (my $i = 0; $i < length($string); $i++) {
+
+        $first_y = CENTER_Y - $text_height / 2; # XXX
+
+        for (my $i = 0; $i < length($text); $i++) {
+
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $xpos = $first_x;
+                $first_y += $line_height;
+                next;
+            }
+
             $letter_rect[$i]->x( $xpos );
     	    $xpos += $letter_rect[$i]->w;
-    	    $ypos = CENTER_Y + sin(M_PI / 180 * ($angle + $i * 15)) * $text_height * $wave_amplitude_cur;
+    	    # $ypos = CENTER_Y + sin(M_PI / 180 * ($angle + $i * 15)) * $text_height * $wave_amplitude_cur; # works
+            # $ypos = $first_y + sin(M_PI / 180 * ($angle + $i * 15)) * $text_height * $wave_amplitude_cur;
+            $ypos = $first_y + sin(M_PI / 180 * ($angle + $i * 15)) * $line_height * $wave_amplitude_cur;
 
     	    $letter_rect[$i]->y( $ypos );
  
@@ -255,6 +306,7 @@ async {
     
         }
         $angle += 7;
+
  
         # Bouncing from one screen edge to the other 
         if ($xpos > $screen->w) {
@@ -278,7 +330,7 @@ async {
 
         $first_x += $dir * 3;
     
-        #for (my $i = 0; $i < length($string); $i++) {
+        #for (my $i = 0; $i < length($text); $i++) {
         #    SDL::Video::fill_rect($screen, $letter_rect[$i], $black);
         #}
 
@@ -289,7 +341,6 @@ async {
         cede;
     
         goto next_slide if $next_slide;
-        $skip and do { $skip = 0; last; };
 
     }
 };
@@ -320,8 +371,6 @@ while(1) {
            } elsif( $event->key_sym == SDLK_a ) {
                # spin slower
            } elsif( $event->key_sym == SDLK_w ) {
-               # skip
-               $skip = 1;
            } 
            
        } elsif( $event->type == SDL_QUIT ) { 
@@ -334,7 +383,7 @@ while(1) {
 }
 
 # Freeing the surfaces 
-#for (my $i = 0; $i < length($string); $i++) {
+#for (my $i = 0; $i < length($text); $i++) {
 #    delete $letter_surf[$i];
 #}
 
@@ -351,10 +400,26 @@ exit;
 
 
 __END__
-
-# if ( ! ( $screen = SDL::Video::set_video_mode( DIM_W, DIM_H, 32, SDL_SWSURFACE ) ) )  # XXX
-        # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # XXX no
-
-        # SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]); # good
-
+test slide
+with two lines
+no, wait, three!
+======================
+=font Andes.ttf
+another slide
+======================
+=text_color 255 255 255
+=effect credits
+another slide
+======================
+=background_color 255 0 0
+red
+======================
+=effect wave
+=background_color 192 192 192
+=font Andale Mono.ttf
+=text_color 0 0 0
+=font_size 10
+    $ypos = $first_y + sin(M_PI / 180 * ($angle + $i * 15)) * $line_height * $wave_amplitude_cur;
+    $letter_rect[$i]->y( $ypos );
+    my $letter_angle = - 45 * atan(cos(M_PI / 180 * ($angle + $i * 15))) * $wave_amplitude_cur;
 
