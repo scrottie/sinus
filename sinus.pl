@@ -65,6 +65,7 @@ use strict;
 use warnings;
 
 use SDL;
+use SDL::Image;
 use SDL::Video;
 use SDL::Surface;
 use SDL::TTF;
@@ -117,6 +118,7 @@ my $wave_stop_at_center = 1;
 my $wave_amplitude = 2;
 my $font;
 my $font_size = 35;
+my $image;
 
 #
 
@@ -157,6 +159,8 @@ async {
 
     my $text = '';
 
+    $image = undef;
+
     my $pad = PadWalker::peek_my(0);
 
     while( my $line = readline $fh ) {
@@ -179,6 +183,8 @@ async {
     $black = SDL::Video::map_RGB($screen->format, split m/ +/, $background_color );
 
     $text_color_ob = SDL::Color->new(split m/ +/, $text_color);
+
+    $text .= "\nX" if $image;  # image will replace the X  XXXX
 
     # Getting text surface dimension, it will be useful later 
     my $text_width = 0;
@@ -205,6 +211,19 @@ async {
         $letter_rect[$i]->h( $letter_surf[$i]->h );
     }
 
+    my $image_index;
+    if( $image ) {
+        my $surface = SDL::Image::load( $image ) or die "couldn't load $image: " . SDL::get_error();
+        # treat it like another letter, though this is pretty clunky
+        # do this after we've computed the line height and width and so forth so we don't throw that off, but then fix up the results
+        $text_height += $surface->h;
+        $text_width = $surface->w if $surface->w > $text_width; # XXX maybe we should scale the image down to something reasonable if needed
+        $image_index = length($text) - 1;
+        $letter_surf[$image_index] = $surface;
+        $letter_rect[$image_index]->w( $surface->w );
+        $letter_rect[$image_index]->h( $surface->h );
+    }
+
     #
     #
     #
@@ -229,57 +248,6 @@ async {
 
     goto "effect_$effect" if $effect;
     goto effect_wave;
-
-    #
-    #
-    #
-
-  effect_lard: 
-
-    $first_x = - $text_width;
-    $first_y = CENTER_Y - $text_height / 2;
-
-    while ( 1 ) {
-        $xpos = $first_x;
-        $ypos = $first_y;
-        for ( my $i = 0; $i < length($text); $i++ ) {
-            if( substr($text, $i, 1) eq "\n" ) { 
-                $xpos = $first_x;
-                $ypos += $line_height;
-                next;
-            }
-            $letter_rect[$i]->x( $xpos );
-            $letter_rect[$i]->y( $ypos );
-            $xpos += $letter_rect[$i]->w;
-            # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
-            # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
-            # SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
-            # my $letter_zoom = 1+sqrt( ( CENTER_X - ( $text_width / 2 ) + 10 ) - $xpos );
-            my $letter_zoom;
-            $letter_zoom = 5;
-            $letter_zoom = 4 if $xpos > 10;
-            $letter_zoom = 3 if $xpos > 100;
-            $letter_zoom = 2 if $xpos > 200;
-            $letter_zoom = 1 if $xpos > 300;
-            my $tmp_surface = SDL::GFX::Rotozoom::surface( 
-                $letter_surf[$i], 0, $letter_zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
-            );
-            $render_letter->($tmp_surface, $letter_rect[$i]->x, $letter_rect[$i]->y);
-        }
-
-        if ( $first_x < CENTER_X - $text_width / 2 ) {
-            $first_x += 2;
-        }
-
-        SDL::Video::flip($screen) < 0 and die;
-        SDL::delay(20);
-        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
-
-        cede;
-
-        goto next_slide if $next_slide;
-    
-    }
 
     #
     #
@@ -347,6 +315,7 @@ async {
     $first_x = CENTER_X - $text_width / 2;
     $first_y = $screen->h;
     while ( 1 ) {
+# warn "first_y: $first_y"; # XXX
         $xpos = $first_x;
         $ypos = $first_y;
         for ( my $i = 0; $i < length($text); $i++ ) {
@@ -360,6 +329,7 @@ async {
             $xpos += $letter_rect[$i]->w;
             # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
             # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
+if( $image_index and $i == $image_index ) { warn "image: x: " . $letter_rect[$i]->x . ' y: '. $letter_rect[$i]->y . ' ' . $letter_rect[$i]->h .' ' . $letter_rect[$i]->w . ' ' . $letter_surf[$i]->w . ' ' . $letter_surf[$i]->h . ' ' . substr($text, $i, 1) } # XXXX
             SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
         }
 
@@ -393,6 +363,7 @@ async {
     while ( 1 ) {
 
         $first_y = CENTER_Y - $text_height / 2;
+        $xpos = $first_x;
 
         for (my $i = 0; $i < length($text); $i++) {
 
@@ -523,7 +494,17 @@ __END__
 test slide
 with two lines
 no, wait, three!
+=====================
+=effect credits
+=image cat.jpg
+image!
+=====================
+=effect wave
+=image cat.jpg
+image!
+wtf...
 ======================
+=effect wave
 =font Andes.ttf
 another slide
 ======================
