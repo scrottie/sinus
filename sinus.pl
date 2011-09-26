@@ -127,7 +127,7 @@ if( @ARGV ) {
     $fh = \*DATA;
 }
 
-$font = "Distres2.ttf"; # XXX overwrite and re-open TTF as necessary based on instructions in the slide file
+$font = "Distres2.ttf";
 
 # Initializing video subsystem 
 if ( SDL::init(SDL::SDL_INIT_VIDEO) < 0 ) {
@@ -206,11 +206,137 @@ async {
     }
 
     #
+    #
+    #
+
+    my $render_letter = sub {
+        my $surface = shift;
+        my $x = shift;
+        my $y = shift;
+        SDL::Video::blit_surface( 
+            $surface, 
+            SDL::Rect->new(0, 0, $surface->w, $surface->h), 
+            $screen, 
+            SDL::Rect->new($x, $y, $surface->w, $surface->h)
+        ); 
+    };
+
+    #
+    #
+    #
 
     $next_slide = 0;
 
     goto "effect_$effect" if $effect;
     goto effect_wave;
+
+    #
+    #
+    #
+
+  effect_lard: 
+
+    $first_x = - $text_width;
+    $first_y = CENTER_Y - $text_height / 2;
+
+    while ( 1 ) {
+        $xpos = $first_x;
+        $ypos = $first_y;
+        for ( my $i = 0; $i < length($text); $i++ ) {
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $xpos = $first_x;
+                $ypos += $line_height;
+                next;
+            }
+            $letter_rect[$i]->x( $xpos );
+            $letter_rect[$i]->y( $ypos );
+            $xpos += $letter_rect[$i]->w;
+            # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
+            # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
+            # SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
+            # my $letter_zoom = 1+sqrt( ( CENTER_X - ( $text_width / 2 ) + 10 ) - $xpos );
+            my $letter_zoom;
+            $letter_zoom = 5;
+            $letter_zoom = 4 if $xpos > 10;
+            $letter_zoom = 3 if $xpos > 100;
+            $letter_zoom = 2 if $xpos > 200;
+            $letter_zoom = 1 if $xpos > 300;
+            my $tmp_surface = SDL::GFX::Rotozoom::surface( 
+                $letter_surf[$i], 0, $letter_zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
+            );
+            $render_letter->($tmp_surface, $letter_rect[$i]->x, $letter_rect[$i]->y);
+        }
+
+        if ( $first_x < CENTER_X - $text_width / 2 ) {
+            $first_x += 2;
+        }
+
+        SDL::Video::flip($screen) < 0 and die;
+        SDL::delay(20);
+        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
+
+        cede;
+
+        goto next_slide if $next_slide;
+    
+    }
+
+    #
+    #
+    #
+
+  effect_lard: 0;
+  effect_flab: 0;
+
+    $first_x = - $text_width;
+    $first_y = CENTER_Y - $text_height / 2;
+
+    while ( 1 ) {
+        $xpos = $first_x;
+        $ypos = $first_y;
+        for ( my $i = 0; $i < length($text); $i++ ) {
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $xpos = $first_x;
+                $ypos += $line_height;
+                next;
+            }
+            $letter_rect[$i]->x( $xpos );
+            $letter_rect[$i]->y( $ypos );
+            $xpos += $letter_rect[$i]->w;
+            # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
+            # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
+            # SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
+            # my $letter_zoom = 1+sqrt( ( CENTER_X - ( $text_width / 2 ) + 10 ) - $xpos );
+            my $letter_zoom;
+            if( $effect eq 'lard' ) {
+                $letter_zoom = 6;
+                $letter_zoom = 5 if $xpos > 10;
+                $letter_zoom = 4 if $xpos > 50;
+                $letter_zoom = 3 if $xpos > 100;
+                $letter_zoom = 2 if $xpos > 200;
+                $letter_zoom = 1 if $xpos > 300;
+            } elsif( $effect eq 'flab' ) {
+                $letter_zoom = sqrt( ( CENTER_X - ( $text_width / 2 ) + 1 ) - $first_x );
+            }
+            my $tmp_surface = SDL::GFX::Rotozoom::surface( 
+                $letter_surf[$i], 0, $letter_zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
+            );
+            $render_letter->($tmp_surface, $letter_rect[$i]->x, $letter_rect[$i]->y);
+        }
+
+        if ( $first_x < CENTER_X - $text_width / 2 ) {
+            $first_x += 2;
+        }
+
+        SDL::Video::flip($screen) < 0 and die;
+        SDL::delay(20);
+        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
+
+        cede;
+
+        goto next_slide if $next_slide;
+    
+    }
 
     #
     #
@@ -224,7 +350,6 @@ async {
         $xpos = $first_x;
         $ypos = $first_y;
         for ( my $i = 0; $i < length($text); $i++ ) {
-warn "$i $xpos $ypos";
             if( substr($text, $i, 1) eq "\n" ) { 
                 $xpos = $first_x;
                 $ypos += $line_height;
@@ -244,7 +369,7 @@ warn "$i $xpos $ypos";
 
         SDL::Video::flip($screen) < 0 and die;
         SDL::delay(20);
-        # SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black); # XXX
+        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $black);
 
         cede;
 
@@ -267,7 +392,7 @@ warn "$i $xpos $ypos";
 
     while ( 1 ) {
 
-        $first_y = CENTER_Y - $text_height / 2; # XXX
+        $first_y = CENTER_Y - $text_height / 2;
 
         for (my $i = 0; $i < length($text); $i++) {
 
@@ -297,12 +422,7 @@ warn "$i $xpos $ypos";
             my $tmp_surface = SDL::GFX::Rotozoom::surface( 
                 $letter_surf[$i], $letter_angle, $letter_zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
             );
-            SDL::Video::blit_surface( 
-                $tmp_surface, 
-                SDL::Rect->new(0, 0, $tmp_surface->w, $tmp_surface->h), 
-                $screen, 
-                SDL::Rect->new($letter_rect[$i]->x, $letter_rect[$i]->y, $tmp_surface->w, $tmp_surface->h) # $letter_rect[$i],
-            ); 
+            $render_letter->($tmp_surface, $letter_rect[$i]->x, $letter_rect[$i]->y);
     
         }
         $angle += 7;
@@ -407,11 +527,17 @@ no, wait, three!
 =font Andes.ttf
 another slide
 ======================
-=text_color 255 255 255
+=effect lard
+another slide
+======================
+=effect flab
+another slide
+======================
 =effect credits
 another slide
 ======================
 =background_color 255 0 0
+=text_color 255 255 255
 red
 ======================
 =effect wave
