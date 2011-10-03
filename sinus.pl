@@ -51,7 +51,7 @@ Todo:
 
 o. plugins
 o. text_background image that is scaled to fit around the text and sit behind it and in front of the background; eg, alpha-effects for glass
-o. build int he diagram generating tool I built earlier
+o. build in the diagram generating tool I built earlier
 o. replaced fixed delay, adapt the animation to the frame rate
 o. slide file should let you map keys to increase/decrease variables by way of an order-of-magnitude system
 o. integrate with xclip so that when code gets shown, it also gets loaded into the copy buffer
@@ -208,7 +208,8 @@ async {
     $text_color_ob = SDL::Color->new(split m/ +/, $text_color);
 
     if( $google ) {
-        undef $google;
+
+        $google =~ s{([^a-zA-Z0-9_-])}{'%'.sprintf('%2x', ord $1)}ge;
 
         my $ua = LWP::UserAgent->new;
         $ua->agent("git://gist.github.com/1240179.git");
@@ -220,7 +221,7 @@ async {
         
         # my $req = HTTP::Request->new(GET => 'http://images.google.com/search?tbm=isch&hl=en&source=hp&q=kitten&btnG=Search+Images&gbv=1');
         my $page = 10 * int rand 5;
-        my $req = HTTP::Request->new(GET => 'http://images.google.com/search?q=kitten&hl=en&gbv=1&tbm=isch&start='.$page.'&sa=N');
+        my $req = HTTP::Request->new(GET => 'http://images.google.com/search?q='.$google.'&hl=en&gbv=1&tbm=isch&start='.$page.'&sa=N');
         my $res = $ua->request($req);
         if ($res->is_success) {
             # print $res->decoded_content;
@@ -246,6 +247,7 @@ async {
         $fh->print(get($imgurl));
         close $fh;
         
+        undef $google;
         $image = $fn;
 
     }
