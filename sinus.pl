@@ -92,6 +92,11 @@ use Math::Trig;
 
 use PadWalker;
 
+use Web::Scraper;
+use LWP::Simple;
+use LWP::UserAgent;
+use LWP;
+
 use constant M_PI => 3.14159265358979323846;
 
 $SIG{USR1} = sub { use Carp; Carp::confess "USR1"; };
@@ -130,6 +135,7 @@ tie my $x_func, 'EvalScalar';
 tie my $y_func, 'EvalScalar';
 tie my $rot_func, 'EvalScalar';
 tie my $scale_func, 'EvalScalar';
+my $google;
 
 #
 
@@ -200,6 +206,49 @@ async {
     $background_color_ob = SDL::Video::map_RGB($screen->format, split m/ +/, $background_color );
 
     $text_color_ob = SDL::Color->new(split m/ +/, $text_color);
+
+    if( $google ) {
+        undef $google;
+
+        my $ua = LWP::UserAgent->new;
+        $ua->agent("git://gist.github.com/1240179.git");
+
+        my $image_results_scraper = scraper {
+            process "td>a", 'href[]' => '@href';
+            result 'href';
+        };
+        
+        # my $req = HTTP::Request->new(GET => 'http://images.google.com/search?tbm=isch&hl=en&source=hp&q=kitten&btnG=Search+Images&gbv=1');
+        my $page = 10 * int rand 5;
+        my $req = HTTP::Request->new(GET => 'http://images.google.com/search?q=kitten&hl=en&gbv=1&tbm=isch&start='.$page.'&sa=N');
+        my $res = $ua->request($req);
+        if ($res->is_success) {
+            # print $res->decoded_content;
+        } else {
+            die $res->status_line, "\n";
+        }
+        
+        my $hrefs = $image_results_scraper->scrape($res->decoded_content);
+        
+        $hrefs = [ grep m{^/imgres\?}, @$hrefs ];
+        
+        my $href = $hrefs->[ int rand @$hrefs ];
+        
+        my $params; my $nam;
+        $href =~ s{^/imgres\?}{};
+        map { $nam='word';s{^([a-z]+)=}{$nam=$1;''}e; tr/+/ /; s/%(..)/pack('c',hex($1))/ge; $params->{$nam}=$_; } split/[&;]/, $href;
+        
+        my $imgurl = $params->{imgurl};
+        
+        my $fn = $imgurl; $fn =~ s{.*/}{};
+        
+        open my $fh, '>', $fn or die "$!: $fn";
+        $fh->print(get($imgurl));
+        close $fh;
+        
+        $image = $fn;
+
+    }
 
     $text .= "\nX" if $image;  # image will replace the X  XXXX
 
@@ -440,7 +489,7 @@ async {
             $xpos += $letter_rect[$i]->w;
             # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
             # SDL::Video::blit_surface( $letter_surf[$i], undef, $screen, $letter_rect[$i]); # no, undef does *not* just copy the whole thing
-if( $image_index and $i == $image_index ) { warn "image: x: " . $letter_rect[$i]->x . ' y: '. $letter_rect[$i]->y . ' ' . $letter_rect[$i]->h .' ' . $letter_rect[$i]->w . ' ' . $letter_surf[$i]->w . ' ' . $letter_surf[$i]->h . ' ' . substr($text, $i, 1) } # XXXX
+# if( $image_index and $i == $image_index ) { warn "image: x: " . $letter_rect[$i]->x . ' y: '. $letter_rect[$i]->y . ' ' . $letter_rect[$i]->h .' ' . $letter_rect[$i]->w . ' ' . $letter_surf[$i]->w . ' ' . $letter_surf[$i]->h . ' ' . substr($text, $i, 1) } # XXXX
             SDL::Video::blit_surface( $letter_surf[$i], SDL::Rect->new(0, 0, $letter_surf[$i]->w, $letter_surf[$i]->h), $screen, $letter_rect[$i]);
         }
 
@@ -634,6 +683,7 @@ another slide
 =effect credits
 another slide
 ======================
+=background_image 0
 =background_color 255 0 0
 =text_color 255 255 255
 red
@@ -646,4 +696,8 @@ red
     $ypos = $first_y + sin(M_PI / 180 * ($angle + $i * 15)) * $line_height * $wave_amplitude_cur;
     $letter_rect[$i]->y( $ypos );
     my $letter_angle = - 45 * atan(cos(M_PI / 180 * ($angle + $i * 15))) * $wave_amplitude_cur;
+==============================
+=google kitten
+a kitten
+probably
 
