@@ -45,21 +45,26 @@
 #   See source code for all variables that can be diddled, or
 #   see the example presentation for some of the more useful ones
 
-#   XXX Window should probably be set to full screen and the size read from
-#   the window ob rather than being hard-coded
-
-#   TODO:
-
-#   Config file should let you map keys to numeric variables by way of an order-of-
-#   magnitude based increaser/decreaser.
-
 =for comment
 
 Todo:
 
-o. buttons for next slide, effects, exit...
-o. code listing markup/mode in the slide source that does fixed with font
+o. plugins
+o. text_background image that is scaled to fit around the text and sit behind it and in front of the background; eg, alpha-effects for glass
+o. build int he diagram generating tool I built earlier
+o. replaced fixed delay, adapt the animation to the frame rate
+o. slide file should let you map keys to increase/decrease variables by way of an order-of-magnitude system
 o. integrate with xclip so that when code gets shown, it also gets loaded into the copy buffer
+o. more buttons for tweaking variables
+o. variable/command for running a command
+o. window manager chores, maybe?  bring windows of certain IDs forward, for example
+o. effects:  spiral text inwards; start with text in place but spinning
+o. display web pages via khtmltopng
+
+Done:
+
+o. buttons for next slide, exit...
+o. code listing markup/mode in the slide source that does fixed with font
 o. multiple lines
 o. instructions in the slide for selecting font
 o. instructions in the slide for selecting render effects/settings
@@ -121,6 +126,10 @@ my $font;
 my $font_size = 35;
 my $image;
 my $background_image;
+tie my $x_func, 'EvalScalar';
+tie my $y_func, 'EvalScalar';
+tie my $rot_func, 'EvalScalar';
+tie my $scale_func, 'EvalScalar';
 
 #
 
@@ -146,10 +155,10 @@ if ( ! ( $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOU
     exit(-1);
 }
 
-sub DIM_W () { $screen->w } #use constant DIM_W => 800;
-sub DIM_H () { $screen->h } #use constant DIM_H => 600;
-sub CENTER_X () { DIM_W / 2 } #use constant CENTER_X => DIM_W/2;
-sub CENTER_Y () { DIM_H / 2 } #use constant CENTER_Y => DIM_H/2;
+sub DIM_W () { $screen->w }
+sub DIM_H () { $screen->h }
+sub CENTER_X () { DIM_W / 2 }
+sub CENTER_Y () { DIM_H / 2 }
 
 # Initializing SDL_ttf 
 if ( SDL::TTF::init() < 0 ) {
@@ -174,9 +183,9 @@ async {
     while( my $line = readline $fh ) {
        last if $line =~ m/^===.*===$/;
        if( $line =~ m/^=(\w+) (['"]?)(.*)\2/ ) {
-           warn "setting $1 = $3";
-            exists $pad->{'$' . $1} or die "variable ``$1'' not in pad";
-            ${$pad->{'$' . $1}} = $3;
+           # warn "setting $1 = $3";
+           exists $pad->{'$' . $1} or die "variable ``$1'' not in pad";
+           ${$pad->{'$' . $1}} = $3;
        } else {
            $text .= $line;
        }
@@ -205,7 +214,6 @@ async {
         $text_height += $tmp_text_height;  # probably just $line_height * scalar @text
     }
 
-    # Vertical text scrolling 
     # Dynamic allocation of structures based on number of letters 
     my @letter_rect = map { SDL::Rect->new( 0, 0, 0, 0 ) } 1 .. length $text;
 
@@ -302,6 +310,61 @@ async {
     #
     #
 
+  effect_custom:
+
+    for my $frame ( 0..60 ) {
+        my $row = 0;
+        my $col = 0;
+
+        my $prev_letter_width = 0;
+
+        for ( my $i = 0; $i < length($text); $i++ ) {
+
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $col = 0;
+                $row++;
+                next;
+            }
+
+            my $x     = $x_func->( $frame, $col, $row, $prev_letter_width );
+            my $y     = $y_func->( $frame, $col, $row, $line_height );
+            my $rot   = $rot_func ? $rot_func->( $frame, $col, $row ) : 0;
+            my $scale = $scale_func ? $scale_func->( $frame, $col, $row ) : 1;
+
+            $letter_rect[$i]->x( $x );
+            $letter_rect[$i]->y( $y );
+
+            $prev_letter_width = $letter_rect[$i]->w;
+
+            my $tmp_surface = SDL::GFX::Rotozoom::surface( 
+                $letter_surf[$i], $rot, $scale, SDL::GFX::Rotozoom::SMOOTHING_OFF,
+            );
+
+            $render_letter->($tmp_surface, $letter_rect[$i]->x, $letter_rect[$i]->y);
+
+            $col++;
+
+        }
+
+        SDL::Video::flip($screen) < 0 and die;
+        $clear_screen->();
+        SDL::delay(20);
+
+        cede;
+
+        goto next_slide if $next_slide;
+    }
+    while(1) {
+        SDL::delay(20);
+        cede;
+        goto next_slide if $next_slide;
+    }
+
+
+    #
+    #
+    #
+
   effect_lard: 0;
   effect_flab: 0;
 
@@ -364,7 +427,6 @@ async {
     $first_x = CENTER_X - $text_width / 2;
     $first_y = $screen->h;
     while ( 1 ) {
-# warn "first_y: $first_y"; # XXX
         $xpos = $first_x;
         $ypos = $first_y;
         for ( my $i = 0; $i < length($text); $i++ ) {
@@ -519,27 +581,30 @@ while(1) {
 
 }
 
-# Freeing the surfaces 
-#for (my $i = 0; $i < length($text); $i++) {
-#    delete $letter_surf[$i];
-#}
+#
+#
+#
 
-# Freeing dynamic allocated structures 
-#@letter_surf = ();
-#@letter_rect = ();
+package EvalScalar;
 
-# Closing font and libraries 
-#$font = undef;
-#SDL::TTF::quit();
-#SD::quit();
+use Tie::Scalar;
+use base 'Tie::StdScalar';
 
-exit;
+sub FETCH { ${ $_[0] } }
+sub STORE { ${$_[0]} = eval 'sub { my($i, $x, $y, $d) = @_; ' . $_[1] . ' };' }
+
+1;
 
 
 __END__
 test slide
 with two lines
 no, wait, three!
+=====================
+=effect custom
+=x_func $i * 10 + $x * 25 
+=y_func $i * 10 + $y * 30
+test custom slide
 =====================
 =effect credits
 =image cat.jpg
