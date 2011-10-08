@@ -49,7 +49,9 @@
 
 Todo:
 
-o. plugins
+o. =music directive
+o. auto font size (80% of max width or height)
+o.   ($seconds, $microseconds) = gettimeofday;
 o. text_background image that is scaled to fit around the text and sit behind it and in front of the background; eg, alpha-effects for glass
 o. build in the diagram generating tool I built earlier
 o. replaced fixed delay, adapt the animation to the frame rate
@@ -63,16 +65,46 @@ o. display web pages via khtmltopng
 
 Done:
 
+o. plugins
 o. buttons for next slide, exit...
 o. code listing markup/mode in the slide source that does fixed with font
 o. multiple lines
 o. instructions in the slide for selecting font
 o. instructions in the slide for selecting render effects/settings
 
+Note:
+
+o. ls *.ttf | sed -e 's!.*!=font &\n&\n=====================================\n!' > fonts.txt 
+
 =cut
 
 use strict;
 use warnings;
+
+use Config;
+use Carp;
+use Data::Dumper;
+
+BEGIN {
+    my $perl = $Config{perlpath};
+    push @INC, sub { 
+        my $self = shift;
+        my $module = shift;
+        return if grep $module eq $_, 'attrs.pm', 'Tie/StdScalar.pm', 'HTML/TreeBuilder/XPath/Node.pm';
+        $module =~ s{/}{::}g;  $module =~ s{\.pm$}{};
+        warn "installing $module";
+        my @module = ($module); 
+        @module = qw(Event Coro::Event Coro) if $module[0] eq 'Coro';  # all three, in order
+        my $cpanm = `which cpanm`;
+        chomp $cpanm;
+        if( ! $cpanm ) {
+            system 'wget', 'http://cpanmin.us', '-O', 'cpanm'; 
+            $cpanm = 'cpanm';
+        }
+        system $perl, $cpanm, @module;
+        return 1;
+    };
+}
 
 use SDL;
 use SDL::Image;
@@ -96,10 +128,16 @@ use Web::Scraper;
 use LWP::Simple;
 use LWP::UserAgent;
 use LWP;
+use Time::HiRes;
 
 use constant M_PI => 3.14159265358979323846;
 
 $SIG{USR1} = sub { use Carp; Carp::confess "USR1"; };
+
+#
+
+my $slide_number = 1;
+my @slide_offsets;
 
 # renderer vars
 
@@ -115,6 +153,9 @@ my $ypos; my $first_y;
 my $wave_stop_at_center_cur;
 my $wave_amplitude_cur;
 my $background_image_ob;
+my %unicorns;  # unicorn surfaces
+my @unicorns;  # unicorns on the screen
+my $frame_number;
 
 # commands from IO to renderer 
 
@@ -136,6 +177,8 @@ tie my $y_func, 'EvalScalar';
 tie my $rot_func, 'EvalScalar';
 tie my $scale_func, 'EvalScalar';
 my $google;
+my $ms_per_frame = 20; # XXX temp; really we want to judge how much time elapsed and then move forward the right amount in the animation
+my $bounce_rate = 10;
 
 #
 
@@ -172,6 +215,25 @@ if ( SDL::TTF::init() < 0 ) {
     exit(-1);
 }
 
+# Initialize Unicorns
+
+if( -d 'corn' ) {
+    opendir my $corns, 'corn' or die;
+    while( my $fn = readdir $corns ) {
+        # (my $base, my $num) = $fn =~ m{(.*)\.(\d)\.ppm$};
+        (my $base, my $num) = $fn =~ m{(.*)\.(\d)\.png$};
+        next unless $base and $num;
+        # warn "base $base num $num fn $fn";
+        my $unicorn_surface = SDL::Image::load( "corn/$fn" ) or die "couldn't load $fn: " . SDL::get_error();
+        push @{ $unicorns{$base} }, $unicorn_surface;
+    }
+}
+
+# die Data::Dumper::Dumper \%unicorns;
+
+# rainbow_2.gif.1.ppm
+# rainbow_2.gif.2.ppm
+
 #
 # animate
 #
@@ -182,12 +244,24 @@ async {
 
     my $text = '';
 
+    @unicorns = ();
+
     $image = undef;
+    $dir = 1;
 
     my $pad = PadWalker::peek_my(0);
 
+    $slide_offsets[ $slide_number++ ] = tell $fh;
+
     while( my $line = readline $fh ) {
-       last if $line =~ m/^===.*===$/;
+       if( $line =~ m/^===.*===$/ ) {
+           print $line;
+           last;
+       }
+       if( $line =~ m/^#/ ) {
+           print $line;
+           next;
+       }
        if( $line =~ m/^=(\w+) (['"]?)(.*)\2/ ) {
            # warn "setting $1 = $3";
            exists $pad->{'$' . $1} or die "variable ``$1'' not in pad";
@@ -273,7 +347,8 @@ async {
     for ( my $i = 0; $i < length($text); $i++) {
         my $letter = substr $text, $i, 1;
         next if $letter eq "\n";
-        $letter_surf[$i] = SDL::TTF::render_text_blended($font_ob, $letter, $text_color_ob);
+        $letter_surf[$i] = SDL::TTF::render_text_blended($font_ob, $letter, $text_color_ob) or next;
+
         $letter_rect[$i]->w( $letter_surf[$i]->w );
         $letter_rect[$i]->h( $letter_surf[$i]->h );
     }
@@ -315,6 +390,7 @@ async {
         my $surface = shift;
         my $x = shift;
         my $y = shift;
+        $surface or warn and return;
         SDL::Video::blit_surface( 
             $surface, 
             SDL::Rect->new(0, 0, $surface->w, $surface->h), 
@@ -348,6 +424,33 @@ async {
         }
     };
 
+    my $delay = do {
+        my $last_ts = Time::HiRes::gettimeofday();
+        sub {
+            my $new_ts = Time::HiRes::gettimeofday();
+            my $delta_ts = $new_ts - $last_ts;
+            if( $delta_ts < $ms_per_frame / 100 ) {
+               # small delta; slow things down a bit
+               SDL::delay(20 - $delta_ts * 100 );
+               # warn "adding delay: @{[ 20 - $delta_ts * 100]} ms";
+            } else {
+               # warn "no delay; running behind schedule: @{[ 20 - $delta_ts * 100]} ms";
+            }
+            $last_ts = $new_ts;
+            $frame_number++; # XXX
+        };
+    };
+
+    my $cornify = sub {
+        for my $unicorn_record ( @unicorns ) {
+            # $unicorn_record = [ x, y, name ]
+            my $unicorn_frame_number = $frame_number % @{ $unicorns{ $unicorn_record->[2] } };
+            my $unicorn_surface = $unicorns{ $unicorn_record->[2] }[ $unicorn_frame_number ] or die;
+warn "XXX unicorn_frame_number $unicorn_frame_number x $unicorn_record->[0], y $unicorn_record->[1] ";
+            $render_letter->( $unicorn_surface, $unicorn_record->[0], $unicorn_record->[1] );
+        }
+    };
+
     #
     #
     #
@@ -360,6 +463,81 @@ async {
     #
     #
     #
+
+  effect_bounce:
+
+    $first_x = - $text_width;
+    $first_y = CENTER_Y - $text_height / 2;
+
+    while( 1 ) {
+        $xpos = $first_x;
+        $ypos = $first_y;
+        for ( my $i = 0; $i < length($text); $i++ ) {
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $xpos = $first_x;
+                $ypos += $line_height;
+                next;
+            }
+            $letter_rect[$i]->x( $xpos );
+            $letter_rect[$i]->y( $ypos );
+            $xpos += $letter_rect[$i]->w;
+            $render_letter->($letter_surf[$i], $letter_rect[$i]->x, $letter_rect[$i]->y);
+        }
+
+        if ( $dir == 1 ) {
+            $first_x += $bounce_rate;
+            $dir = -1 if $first_x > 0;  # really only useful for things larger than the screen
+        } elsif( $dir == -1 ) {
+            $first_x -= $bounce_rate;
+            $dir = 1 if $first_x + $text_width < $screen->w;
+        }
+
+        $cornify->();
+        SDL::Video::flip($screen) < 0 and die;
+        $clear_screen->();
+        $delay->();
+
+        cede;
+
+        goto next_slide if $next_slide;
+    
+    }
+
+  effect_instant:
+
+    $clear_screen->();
+    do {
+
+        my $first_x = CENTER_X - $text_width / 2;
+        my $first_y = CENTER_Y - $text_height / 2;
+
+        my $x = $first_x;
+        my $y = $first_y;
+
+        for ( my $i = 0; $i < length($text); $i++ ) {
+
+            if( substr($text, $i, 1) eq "\n" ) { 
+                $x = $first_x;
+                $y += $line_height;
+                next;
+            }
+
+            $letter_rect[$i]->x( $x );
+            $letter_rect[$i]->y( $y );
+
+            $render_letter->($letter_surf[$i], $letter_rect[$i]->x, $letter_rect[$i]->y);
+
+            $x += $letter_rect[$i]->w;
+
+        }
+    };
+    SDL::Video::flip($screen) < 0 and die;
+    while(1) {
+        $cornify->();
+        SDL::delay(20);
+        cede;
+        goto next_slide if $next_slide;
+    }
 
   effect_custom:
 
@@ -397,15 +575,17 @@ async {
 
         }
 
+        $cornify->();
         SDL::Video::flip($screen) < 0 and die;
         $clear_screen->();
-        SDL::delay(20);
+        $delay->();
 
         cede;
 
         goto next_slide if $next_slide;
     }
     while(1) {
+        $cornify->();
         SDL::delay(20);
         cede;
         goto next_slide if $next_slide;
@@ -456,12 +636,13 @@ async {
         }
 
         if ( $first_x < CENTER_X - $text_width / 2 ) {
-            $first_x += 2;
+            $first_x += 5;
         }
 
+        $cornify->();
         SDL::Video::flip($screen) < 0 and die;
         $clear_screen->();
-        SDL::delay(20);
+        $delay->();
 
         cede;
 
@@ -499,9 +680,10 @@ async {
             $first_y -= 2;
         }
 
+        $cornify->();
         SDL::Video::flip($screen) < 0 and die;
         $clear_screen->();
-        SDL::delay(20);
+        $delay->();
 
         cede;
 
@@ -583,9 +765,10 @@ async {
 
         $first_x += $dir * 3;
     
+        $cornify->();
         SDL::Video::flip($screen) < 0 and die;
         $clear_screen->();
-        SDL::delay(20);
+        $delay->();
 
         cede;
     
@@ -615,8 +798,19 @@ while(1) {
            if( $event->key_sym == SDLK_SPACE ) {
                # next slide
                $next_slide = 1;
+           } elsif( $event->key_sym == SDLK_b ) {
+               $slide_number -= 2;
+               $slide_number = 0 if $slide_number < 0;
+               seek $fh, $slide_offsets[ $slide_number ], 0;
+               $next_slide = 1;
            } elsif( $event->key_sym == SDLK_q ) {
                exit; # quit
+           } elsif( $event->key_sym == SDLK_u ) {
+               # unicorn!
+               my @unicorn_names = keys %unicorns;
+               my $unicorn_name = $unicorn_names[ int rand @unicorn_names ];
+               my $unicorn_surface = $unicorns{ $unicorn_name }[0] or die "no surface for unicorn ``$unicorn_name''";
+               push @unicorns, [ int rand( DIM_W - $unicorn_surface->w ), int rand( DIM_H - $unicorn_surface->h ), $unicorn_name ];
            } elsif( $event->key_sym == SDLK_a ) {
                # spin slower
            } elsif( $event->key_sym == SDLK_w ) {
@@ -657,6 +851,9 @@ no, wait, three!
 =y_func $i * 10 + $y * 30
 test custom slide
 =====================
+=effect instant
+There.
+==========================
 =effect credits
 =image cat.jpg
 image!
