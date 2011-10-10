@@ -446,7 +446,7 @@ async {
             # $unicorn_record = [ x, y, name ]
             my $unicorn_frame_number = $frame_number % @{ $unicorns{ $unicorn_record->[2] } };
             my $unicorn_surface = $unicorns{ $unicorn_record->[2] }[ $unicorn_frame_number ] or die;
-warn "XXX unicorn_frame_number $unicorn_frame_number x $unicorn_record->[0], y $unicorn_record->[1] ";
+            # warn "unicorn_frame_number $unicorn_frame_number x $unicorn_record->[0], y $unicorn_record->[1] ";
             $render_letter->( $unicorn_surface, $unicorn_record->[0], $unicorn_record->[1] );
         }
     };
@@ -534,7 +534,8 @@ warn "XXX unicorn_frame_number $unicorn_frame_number x $unicorn_record->[0], y $
     SDL::Video::flip($screen) < 0 and die;
     while(1) {
         $cornify->();
-        SDL::delay(20);
+        SDL::Video::flip($screen) < 0 and die;
+        $delay->();
         cede;
         goto next_slide if $next_slide;
     }
