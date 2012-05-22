@@ -62,6 +62,8 @@ o. variable/command for running a command
 o. window manager chores, maybe?  bring windows of certain IDs forward, for example
 o. effects:  spiral text inwards; start with text in place but spinning
 o. display web pages via khtmltopng
+o. actually, that's pretty cool that SDL recognizes my touch screen as a controller.  I may have to take advantage of that in my presentation software here, like Tim's iPad presentation software does
+
 
 Done:
 
@@ -113,6 +115,7 @@ use SDL::Surface;
 use SDL::TTF;
 use SDL::Rect;
 use SDL::Color;
+use SDL::Joystick;
 use SDL::GFX::Rotozoom;
 use SDL::Event;  # for the event object itself
 use SDL::Events; # functions for event queue handling
@@ -133,6 +136,7 @@ use Time::HiRes;
 use constant M_PI => 3.14159265358979323846;
 
 $SIG{USR1} = sub { use Carp; Carp::confess "USR1"; };
+$SIG{PIPE} = 'IGNORE';
 
 #
 
@@ -176,6 +180,7 @@ tie my $x_func, 'EvalScalar';
 tie my $y_func, 'EvalScalar';
 tie my $rot_func, 'EvalScalar';
 tie my $scale_func, 'EvalScalar';
+my $system;
 my $google;
 my $ms_per_frame = 20; # XXX temp; really we want to judge how much time elapsed and then move forward the right amount in the animation
 my $bounce_rate = 10;
@@ -192,16 +197,33 @@ if( @ARGV ) {
 $font = "Distres2.ttf";
 
 # Initializing video subsystem 
-if ( SDL::init(SDL::SDL_INIT_VIDEO) < 0 ) {
+if ( SDL::init(SDL::SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0 ) {
     printf("SDL_Init error: %s\n", SDL::get_error());
     exit(-1);
 }
 
+# Joystick
+my $joystick;
+if( my $num_joysticks = SDL::Joystick::num_joysticks() ) {
+    my $js_index = $num_joysticks-1;
+    $joystick = SDL::Joystick->new($js_index) or die "XXXXXX";
+    if($joystick) {
+            printf("Opened Joystick $js_index\n");
+            printf("Name: %s\n",              SDL::Joystick::name($js_index));
+            printf("Number of Axes: %d\n",    SDL::Joystick::num_axes($joystick));
+            printf("Number of Buttons: %d\n", SDL::Joystick::num_buttons($joystick));
+            printf("Number of Balls: %d\n",   SDL::Joystick::num_balls($joystick));
+    }
+}
+# SDL::Joystick::event_state(SDL_ENABLE); # http://www.libsdl.org/docs/html/sdljoystickeventstate.html
+SDL::Events::joystick_event_state(SDL_ENABLE); # t/core_events.t
+
 # Opening a window to draw inside 
-# if ( ! ( $screen = SDL::Video::set_video_mode( DIM_W, DIM_H, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) ) ) 
-if ( ! ( $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) ) ) {
-    printf("SDL_SetVideoMode error: %s\n", SDL::get_error());
-    exit(-1);
+my $fullscreen = 1;
+if( $fullscreen ) {
+    $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) or Carp::confess SDL::get_error;
+} else {
+    $screen = SDL::Video::set_video_mode( 800, 600, 32, SDL_HWSURFACE | SDL_DOUBLEBUF ) or Carp::confess SDL::get_error;
 }
 
 sub DIM_W () { $screen->w }
@@ -324,6 +346,16 @@ async {
         undef $google;
         $image = $fn;
 
+    }
+
+    if( $system ) {
+        if( $fullscreen ) { $screen = SDL::Video::set_video_mode( 1024, 768, 32, SDL_HWSURFACE | SDL_DOUBLEBUF ) or Carp::confess SDL::get_error; }
+        system $system;
+        $system = undef;
+        sleep 1;
+        my $event = SDL::Event->new();  # digest any wayward events
+        SDL::Events::poll_event($event) for 1..10;
+        if( $fullscreen ) { $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) or Carp::confess SDL::get_error; };
     }
 
     $text .= "\nX" if $image;  # image will replace the X  XXXX
@@ -786,11 +818,17 @@ while(1) {
 
     # SDL::Events::pump_events();
 
+    my $prev_slide = sub {
+        $slide_number -= 2;
+        $slide_number = 0 if $slide_number < 0;
+        seek $fh, $slide_offsets[ $slide_number ], 0;
+        $next_slide = 1;
+    };
+
     my $event = SDL::Event->new();
 
     if(SDL::Events::poll_event($event)) {  
        if( $event->type == SDL_MOUSEBUTTONDOWN ) {
-           # now you can handle the details
            #$event->button_which;
            #$event->button_button;
            #$event->button_x;
@@ -800,11 +838,9 @@ while(1) {
                # next slide
                $next_slide = 1;
            } elsif( $event->key_sym == SDLK_b ) {
-               $slide_number -= 2;
-               $slide_number = 0 if $slide_number < 0;
-               seek $fh, $slide_offsets[ $slide_number ], 0;
-               $next_slide = 1;
+               $prev_slide->();
            } elsif( $event->key_sym == SDLK_q ) {
+               warn "quitting on q key";
                exit; # quit
            } elsif( $event->key_sym == SDLK_u ) {
                # unicorn!
@@ -818,6 +854,23 @@ while(1) {
                # spin faster... dunno...
            } 
            
+       } elsif( $event->type == SDL_JOYAXISMOTION ) {
+           #warn "- Joystick axis motion event structure: which axis: " . $event->jaxis_axis . " value: " . $event->jaxis_value;
+           if( $event->jaxis_axis == 3 and $event->jaxis_value > 10000 ) {
+               # right on the d-pad
+               $next_slide = 1;
+           } elsif( $event->jaxis_axis == 3 and $event->jaxis_value < -10000 ) {
+               # left on the d-pad
+               $prev_slide->();
+           }
+       } elsif( $event->type == SDL_JOYBALLMOTION ) {
+           #warn "- Joystick trackball motion event structure";
+       } elsif( $event->type == SDL_JOYHATMOTION ) {
+           #warn " - Joystick hat position change event structure";
+       } elsif( $event->type == SDL_JOYBUTTONDOWN ) {
+           #warn" Joystick button event structure: button down: button ". $event->jbutton_button;
+       } elsif( $event->type == SDL_JOYBUTTONUP ) {
+           #warn " - Joystick button event structure: button up: button ". $event->jbutton_button;
        } elsif( $event->type == SDL_QUIT ) { 
            last;
        }
