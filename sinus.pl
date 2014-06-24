@@ -58,7 +58,6 @@ o. replaced fixed delay, adapt the animation to the frame rate
 o. slide file should let you map keys to increase/decrease variables by way of an order-of-magnitude system
 o. integrate with xclip so that when code gets shown, it also gets loaded into the copy buffer
 o. more buttons for tweaking variables
-o. variable/command for running a command
 o. window manager chores, maybe?  bring windows of certain IDs forward, for example
 o. effects:  spiral text inwards; start with text in place but spinning
 o. display web pages via khtmltopng
@@ -87,26 +86,26 @@ use Config;
 use Carp;
 use Data::Dumper;
 
-BEGIN {
-    my $perl = $Config{perlpath};
-    push @INC, sub { 
-        my $self = shift;
-        my $module = shift;
-        return if grep $module eq $_, 'attrs.pm', 'Tie/StdScalar.pm', 'HTML/TreeBuilder/XPath/Node.pm';
-        $module =~ s{/}{::}g;  $module =~ s{\.pm$}{};
-        warn "installing $module";
-        my @module = ($module); 
-        @module = qw(Event Coro::Event Coro) if $module[0] eq 'Coro';  # all three, in order
-        my $cpanm = `which cpanm`;
-        chomp $cpanm;
-        if( ! $cpanm ) {
-            system 'wget', 'http://cpanmin.us', '-O', 'cpanm'; 
-            $cpanm = 'cpanm';
-        }
-        system $perl, $cpanm, @module;
-        return 1;
-    };
-}
+#BEGIN {
+#    my $perl = $Config{perlpath};
+#    push @INC, sub { 
+#        my $self = shift;
+#        my $module = shift;
+#        return if grep $module eq $_, 'attrs.pm', 'Tie/StdScalar.pm', 'HTML/TreeBuilder/XPath/Node.pm';
+#        $module =~ s{/}{::}g;  $module =~ s{\.pm$}{};
+#        warn "installing $module";
+#        my @module = ($module); 
+#        @module = qw(Event Coro::Event Coro) if $module[0] eq 'Coro';  # all three, in order
+#        my $cpanm = `which cpanm`;
+#        chomp $cpanm;
+#        if( ! $cpanm ) {
+#            system 'wget', 'http://cpanmin.us', '-O', 'cpanm'; 
+#            $cpanm = 'cpanm';
+#        }
+#        system $perl, $cpanm, @module;
+#        return 1;
+#    };
+#}
 
 use SDL;
 use SDL::Image;
@@ -133,6 +132,9 @@ use LWP::UserAgent;
 use LWP;
 use Time::HiRes;
 
+sub opt ($) { scalar grep $_ eq $_[0], @ARGV }
+sub arg ($) { my $opt = shift; my $i=1; while($i<=$#ARGV) { return $ARGV[$i] if $ARGV[$i-1] eq $opt; $i++; } }
+
 use constant M_PI => 3.14159265358979323846;
 
 $SIG{USR1} = sub { use Carp; Carp::confess "USR1"; };
@@ -140,7 +142,7 @@ $SIG{PIPE} = 'IGNORE';
 
 #
 
-my $slide_number = 1;
+my $slide_number = 1; # arg('--slide') || 1; ... need to do read all of the slides and populate @slide_offsets before we can do this, and then we'd still have to tell() to where we need to be
 my @slide_offsets;
 
 # renderer vars
@@ -157,6 +159,8 @@ my $ypos; my $first_y;
 my $wave_stop_at_center_cur;
 my $wave_amplitude_cur;
 my $background_image_ob;
+my $background_image_ob_x_offset;
+my $background_image_ob_y_offset;
 my %unicorns;  # unicorn surfaces
 my @unicorns;  # unicorns on the screen
 my $frame_number;
@@ -176,6 +180,7 @@ my $font;
 my $font_size = 35;
 my $image;
 my $background_image;
+my $clear_background;
 tie my $x_func, 'EvalScalar';
 tie my $y_func, 'EvalScalar';
 tie my $rot_func, 'EvalScalar';
@@ -184,6 +189,8 @@ my $system;
 my $google;
 my $ms_per_frame = 20; # XXX temp; really we want to judge how much time elapsed and then move forward the right amount in the animation
 my $bounce_rate = 10;
+my $autoplay = 0;
+my $autoplay_timer;
 
 #
 
@@ -196,16 +203,28 @@ if( @ARGV ) {
 
 $font = "Distres2.ttf";
 
-# Initializing video subsystem 
-if ( SDL::init(SDL::SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0 ) {
-    printf("SDL_Init error: %s\n", SDL::get_error());
-    exit(-1);
+# Opening a window to draw inside 
+my $fullscreen = 1;
+sub open_screen {
+    # SDL::quit() if $screen; # makes it crash that much quicker
+    if( $fullscreen ) {
+        $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) or Carp::confess SDL::get_error;
+    } else {
+        $screen = SDL::Video::set_video_mode( 800, 600, 24, SDL_HWSURFACE | SDL_DOUBLEBUF ) or Carp::confess SDL::get_error;
+    }
+    # Initializing video subsystem 
+    if ( SDL::init(SDL::SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0 ) {
+        printf("SDL_Init error: %s\n", SDL::get_error());
+        exit(-1);
+    }
 }
+open_screen();
 
 # Joystick
 my $joystick;
 if( my $num_joysticks = SDL::Joystick::num_joysticks() ) {
     my $js_index = $num_joysticks-1;
+    # my $js_index = 0;
     $joystick = SDL::Joystick->new($js_index) or die "XXXXXX";
     if($joystick) {
             printf("Opened Joystick $js_index\n");
@@ -213,18 +232,11 @@ if( my $num_joysticks = SDL::Joystick::num_joysticks() ) {
             printf("Number of Axes: %d\n",    SDL::Joystick::num_axes($joystick));
             printf("Number of Buttons: %d\n", SDL::Joystick::num_buttons($joystick));
             printf("Number of Balls: %d\n",   SDL::Joystick::num_balls($joystick));
+        sleep 3;
     }
 }
 # SDL::Joystick::event_state(SDL_ENABLE); # http://www.libsdl.org/docs/html/sdljoystickeventstate.html
 SDL::Events::joystick_event_state(SDL_ENABLE); # t/core_events.t
-
-# Opening a window to draw inside 
-my $fullscreen = 1;
-if( $fullscreen ) {
-    $screen = SDL::Video::set_video_mode( 0, 0, 32, SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN ) or Carp::confess SDL::get_error;
-} else {
-    $screen = SDL::Video::set_video_mode( 800, 600, 32, SDL_HWSURFACE | SDL_DOUBLEBUF ) or Carp::confess SDL::get_error;
-}
 
 sub DIM_W () { $screen->w }
 sub DIM_H () { $screen->h }
@@ -247,6 +259,34 @@ if( -d 'corn' ) {
         next unless $base and $num;
         # warn "base $base num $num fn $fn";
         my $unicorn_surface = SDL::Image::load( "corn/$fn" ) or die "couldn't load $fn: " . SDL::get_error();
+# die ${  $unicorn_surface->format };
+
+for my $surface ( $screen, $unicorn_surface ) { 
+
+warn "bits per pixel " .           $surface->format->BitsPerPixel;
+
+warn "bytes per pixel " .           $surface->format->BytesPerPixel;
+
+warn "rloss " .           $surface->format->Rloss; #red   loss
+warn "bloss " .          $surface->format->Bloss; #blue  loss
+warn "gloss " .           $surface->format->Gloss; #green loss    
+warn "aloss " .           $surface->format->Aloss; #alpha loss
+
+warn "rshift " .           $surface->format->Rshift; #red   shift
+warn "bshift " .           $surface->format->Bshift; #blue  shift
+warn "gshift " .           $surface->format->Gshift; #green shift  
+warn "ashift " .           $surface->format->Ashift; #alpha shift
+
+
+warn "rmask " .           $surface->format->Rmask; #red   mask
+warn  "bmask " .          $surface->format->Bmask; #blue  mask
+warn "gmask " .           $surface->format->Gmask; #green mask    
+warn "amask " .           $surface->format->Amask; #alpha mask
+
+}
+
+
+
         push @{ $unicorns{$base} }, $unicorn_surface;
     }
 }
@@ -265,6 +305,7 @@ async {
   next_slide:
 
     my $text = '';
+    $autoplay = $autoplay ? $autoplay : 0; # pointless code just to get $autoplay into the pad
 
     @unicorns = ();
 
@@ -286,7 +327,7 @@ async {
        }
        if( $line =~ m/^=(\w+) (['"]?)(.*)\2/ ) {
            # warn "setting $1 = $3";
-           exists $pad->{'$' . $1} or die "variable ``$1'' not in pad";
+           exists $pad->{'$' . $1} or die "variable ``$1'' not in pad: " . join ', ', keys %$pad;
            ${$pad->{'$' . $1}} = $3;
        } else {
            $text .= $line;
@@ -365,6 +406,7 @@ async {
     my $text_height = 0;
     my $line_height = 0;  # height of an individual line of text
     for my $line ( split m/\n/, $text ) {
+        $text =~ s{\t}{    }g;
         (my $tmp_text_width, my $tmp_text_height) = @{ SDL::TTF::size_text($font_ob, $line) };
         $text_width = $tmp_text_width if $tmp_text_width > $text_width;
         $line_height = $tmp_text_height if $tmp_text_height > $line_height;
@@ -398,8 +440,13 @@ async {
         $letter_rect[$image_index]->h( $surface->h );
     }
 
+    if( $background_image or $clear_background ) {
+        SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $background_color_ob);  # in case the scaled image doesn't completely cover the background
+        $clear_background = $background_image = $background_image_ob = undef if $clear_background;
+    }
+
     if( $background_image ) {
-        $background_image_ob = SDL::Image::load( $background_image ) or die "couldn't load $image: " . SDL::get_error();
+        $background_image_ob = SDL::Image::load( $background_image ) or die "couldn't load $background_image: " . SDL::get_error();
         if( $background_image_ob->w != DIM_W or $background_image_ob->h != DIM_H ) {
             # scale the image up or down as necessary to fit; correct aspect ratio isn't achieved
             my $zoom1 = DIM_W / $background_image_ob->w;
@@ -409,6 +456,8 @@ async {
                 $background_image_ob, 0, $zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
             );
             $background_image_ob = $tmp_surface;
+            $background_image_ob_x_offset = int( ( $screen->w - $background_image_ob->w ) / 2 );
+            $background_image_ob_y_offset = int( ( $screen->h - $background_image_ob->h ) / 2 );
         }
     } else {
         $background_image_ob = undef;
@@ -433,24 +482,7 @@ async {
 
     my $clear_screen = sub {
         if( $background_image_ob ) {
-            # SDL::Video::blit_surface( $src_surface, $src_rect, $dest_surface, $dest_rect );
-            #if( $background_image_ob->w == DIM_W and $background_image_ob->h == DIM_H ) {
-                #SDL::Video::blit_surface( 
-                #    $background_image_ob,
-                #    SDL::Rect->new(0, 0, $background_image_ob->w, $background_image_ob->h), 
-                #    $screen,
-                #    SDL::Rect->new(0, 0, DIM_W, DIM_H),
-                #);
-                $render_letter->($background_image_ob, 0, 0);
-            #} else {
-            #    my $zoom1 = $background_image_ob->w / DIM_W;
-            #    my $zoom2 = $background_image_ob->h / DIM_H;
-            #    (my $zoom) = sort { $a <=> $b } $zoom1, $zoom2;  # smaller size of the two
-            #    my $tmp_surface = SDL::GFX::Rotozoom::surface( 
-            #        $background_image_ob, 0, $zoom, SDL::GFX::Rotozoom::SMOOTHING_OFF,
-            #    );
-            #    $render_letter->($tmp_surface, 0, 0);
-            #}
+            $render_letter->($background_image_ob, $background_image_ob_x_offset, $background_image_ob_y_offset);
         } else {
             SDL::Video::fill_rect($screen, SDL::Rect->new(0, 0, DIM_W, DIM_H), $background_color_ob);
         }
@@ -488,6 +520,7 @@ async {
     #
 
     $next_slide = 0;
+    $autoplay_timer = undef;
 
     goto "effect_$effect" if $effect;
     goto effect_wave;
@@ -814,7 +847,7 @@ async {
 # keyboard/mouse input
 #
 
-while(1) {   
+while(1) {
 
     # SDL::Events::pump_events();
 
@@ -827,7 +860,7 @@ while(1) {
 
     my $event = SDL::Event->new();
 
-    if(SDL::Events::poll_event($event)) {  
+    if(SDL::Events::poll_event($event)) {
        if( $event->type == SDL_MOUSEBUTTONDOWN ) {
            #$event->button_which;
            #$event->button_button;
@@ -839,8 +872,12 @@ while(1) {
                $next_slide = 1;
            } elsif( $event->key_sym == SDLK_b ) {
                $prev_slide->();
+           } elsif( $event->key_sym == SDLK_p ) {
+               $system = 'xpaint -size 800x600 -canvas';
+               $next_slide = 1;
            } elsif( $event->key_sym == SDLK_q ) {
                warn "quitting on q key";
+               SDL::quit();
                exit; # quit
            } elsif( $event->key_sym == SDLK_u ) {
                # unicorn!
@@ -848,6 +885,11 @@ while(1) {
                my $unicorn_name = $unicorn_names[ int rand @unicorn_names ];
                my $unicorn_surface = $unicorns{ $unicorn_name }[0] or die "no surface for unicorn ``$unicorn_name''";
                push @unicorns, [ int rand( DIM_W - $unicorn_surface->w ), int rand( DIM_H - $unicorn_surface->h ), $unicorn_name ];
+           } elsif( $event->key_sym == SDLK_f ) {
+               # toggle fullscreen
+               $fullscreen = ! $fullscreen;
+               open_screen();
+               $slide_number++; $prev_slide->();  # force redraw of the current slide
            } elsif( $event->key_sym == SDLK_a ) {
                # spin slower
            } elsif( $event->key_sym == SDLK_w ) {
@@ -874,6 +916,13 @@ while(1) {
        } elsif( $event->type == SDL_QUIT ) { 
            last;
        }
+    }
+
+    if( $autoplay and ! $autoplay_timer ) {
+        $autoplay_timer = int(time()) + $autoplay;
+    } elsif( $autoplay and int(time()) >= $autoplay_timer ) {
+        $next_slide = 1;
+        $autoplay_timer = 0;
     }
 
     cede;
