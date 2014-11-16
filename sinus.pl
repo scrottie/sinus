@@ -85,6 +85,7 @@ use warnings;
 use Config;
 use Carp;
 use Data::Dumper;
+use FindBin;
 
 #BEGIN {
 #    my $perl = $Config{perlpath};
@@ -335,7 +336,11 @@ async {
     }
 
     # Opening the font 
-    if( ! ( $font_ob = SDL::TTF::open_font($font, $font_size) ) ) {
+    my $font_path = $font;
+    -f $font_path or $font_path = "$FindBin::Bin/$font";
+    -f $font_path or $font_path = "$FindBin::RealBin/$font";
+    -f $font_path or die "$font_path not found";
+    if( ! ( $font_ob = SDL::TTF::open_font($font_path, $font_size) ) ) {
         die "TTF_OpenFont error: " . SDL::get_error();
     }
 
